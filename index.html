@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>城市黑洞吞噬 3D</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #87CEEB; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; user-select: none; -webkit-user-select: none; }
+        #ui-container {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            text-shadow: 1px 1px 2px black;
+            pointer-events: none;
+            z-index: 10;
+        }
+        h1 { margin: 0; font-size: 1.5rem; }
+        #score-board { font-size: 1.2rem; margin-top: 5px; }
+        
+        #win-screen {
+            display: none;
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            z-index: 20;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.5s;
+        }
+        #win-screen.active {
+            opacity: 1;
+            pointer-events: all;
+        }
+        button {
+            padding: 15px 30px;
+            font-size: 1.2rem;
+            background: #ff4757;
+            color: white;
+            border: none;
+            border-radius: 30px;
+            cursor: pointer;
+            margin-top: 20px;
+            box-shadow: 0 4px 15px rgba(255, 71, 87, 0.4);
+            transition: transform 0.1s;
+        }
+        button:active { transform: scale(0.95); }
+        
+        /* Loading overlay */
+        #loader {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #2f3542; display: flex; justify-content: center; align-items: center;
+            color: white; z-index: 100;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-container">
+        <h1>城市黑洞</h1>
+        <div id="score-board">進度: 0 / 0</div>
+        <div id="size-info">黑洞等級: 1</div>
+    </div>
+
+    <div id="win-screen">
+        <h1 style="font-size: 3rem; margin-bottom: 20px;">🎉 遊戲勝利! 🎉</h1>
+        <p>你吞噬了整座城市！</p>
+        <button id="restart-btn">重新開始遊戲</button>
+    </div>
+
+    <div id="loader">載入中...</div>
+
+    <!-- Import Three.js from CDN -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- 全局變量 ---
+        let scene, camera, renderer;
+        let hole;
+        let objects = []; // 存儲可吞噬物體
+        let eatingObjects = []; // 正在被吞噬動畫中的物體
+        
+        // 遊戲狀態
+        let gameData = {
+            totalObjects: 0,
+            eatenCount: 0,
+            holeRadius: 2.0,  // 初始尺寸增大
+            holeLevel: 1,
+            isPlaying: true
+        };
+
+        // 顏色配置
+        const COLORS = {
+            ground: 0xe0e0e0,
+            road: 0x555555,
+            grass: 0x7cfc00,
+            treeTrunk: 0x8B4513,
+            treeLeaves: 0x228B22,
+            buildingRes: [0xffcccc, 0xccffcc, 0xccccff],
+            buildingCom: [0x607d8b, 0x455a64, 0x90a4ae],
+            car: [0xff4757, 0x2ed573, 0x1e90ff, 0xffa502]
+        };
+
+        // 射線檢測用於控制
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        const planeTarget = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+        let targetPosition = new THREE.Vector3(0, 0.05, 0); // 目標位置
+        
+        // 初始化
+        function init() {
+            // 1. 場景設置
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); // 天空藍
+            scene.fog = new THREE.Fog(0x87CEEB, 30, 90);
+
+            // 2. 相機設置 (適配豎屏)
+            const aspect = window.innerWidth / window.innerHeight;
+            // 根據屏幕比例調整視角範圍，確保豎屏能看到足夠多的內容
+            const frustumSize = 40; 
+            camera = new THREE.OrthographicCamera(
+                frustumSize * aspect / -2, 
+                frustumSize * aspect / 2, 
+                frustumSize / 2, 
+                frustumSize / -2, 
+                1, 
+                1000
+            );
+            camera.position.set(20, 40, 20); // ISO 視角
+            camera.lookAt(0, 0, 0);
+
+            // 3. 渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+
+            // 4. 燈光
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(50, 100, 50);
+            dirLight.castShadow = true;
+            dirLight.shadow.camera.left = -50;
+            dirLight.shadow.camera.right = 50;
+            dirLight.shadow.camera.top = 50;
+            dirLight.shadow.camera.bottom = -50;
+            dirLight.shadow.mapSize.width = 2048;
+            dirLight.shadow.mapSize.height = 2048;
+            scene.add(dirLight);
+
+            // 5. 創建遊戲世界
+            createWorld();
+
+            // 6. 創建玩家（黑洞）
+            createHole();
+
+            // 7. 事件監聽
+            window.addEventListener('resize', onWindowResize);
+            
+            // 觸控/滑鼠控制
+            document.addEventListener('pointermove', onPointerMove);
+            document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false }); // 防止滾動
+
+            document.getElementById('restart-btn').addEventListener('click', restartGame);
+
+            // 隱藏加載畫面
+            document.getElementById('loader').style.display = 'none';
+            
+            animate();
+        }
+
+        // --- 世界生成邏輯 ---
+        function createWorld() {
+            // 地面
+            const groundGeo = new THREE.PlaneGeometry(100, 100);
+            const groundMat = new THREE.MeshStandardMaterial({ color: COLORS.ground });
+            const ground = new THREE.Mesh(groundGeo, groundMat);
+            ground.rotation.x = -Math.PI / 2;
+            ground.receiveShadow = true;
+            scene.add(ground);
+
+            // 清空舊物體
+            objects.forEach(obj => scene.remove(obj.mesh));
+            objects = [];
+            gameData.totalObjects = 0;
+
+            // 生成城市佈局
+            // 簡單網格佈局：
+            // 住宅區 (-30, -30) 到 (0, 0)
+            // 公園區 (0, -30) 到 (30, 0)
+            // 商業區 (-30, 0) 到 (30, 30)
+            
+            // 1. 公園 (樹木, 長椅)
+            for (let i = 0; i < 40; i++) {
+                const x = Math.random() * 30 + 2;
+                const z = Math.random() * 30 - 32;
+                const type = Math.random() > 0.3 ? 'tree' : 'bench';
+                createObject(type, x, z);
+            }
+            // 公園綠地底板
+            const parkGeo = new THREE.PlaneGeometry(35, 35);
+            const parkMat = new THREE.MeshStandardMaterial({ color: COLORS.grass });
+            const park = new THREE.Mesh(parkGeo, parkMat);
+            park.rotation.x = -Math.PI / 2;
+            park.position.set(17.5, 0.01, -17.5);
+            park.receiveShadow = true;
+            scene.add(park);
+
+            // 2. 住宅區 (小房子, 車, 圍欄)
+            for (let x = -35; x < -5; x += 10) {
+                for (let z = -35; z < -5; z += 10) {
+                    createObject('house', x + Math.random()*2, z + Math.random()*2);
+                    if(Math.random() > 0.5) createObject('car', x + 6, z + 2);
+                    createObject('fence', x + 5, z + 5);
+                }
+            }
+
+            // 3. 商業區 (高樓, 廣告牌, 更多車)
+            for (let x = -30; x < 30; x += 12) {
+                for (let z = 5; z < 35; z += 12) {
+                    createObject('skyscraper', x, z);
+                    if(Math.random() > 0.3) createObject('car', x + 6, z - 2);
+                    createObject('lamp', x + 5, z + 5);
+                }
+            }
+            
+            // 道路 (視覺裝飾)
+            const roadGeo = new THREE.PlaneGeometry(100, 8);
+            const roadMat = new THREE.MeshStandardMaterial({ color: COLORS.road });
+            const road1 = new THREE.Mesh(roadGeo, roadMat);
+            road1.rotation.x = -Math.PI / 2;
+            road1.position.set(0, 0.02, 0);
+            road1.receiveShadow = true;
+            scene.add(road1);
+            
+            const road2 = road1.clone();
+            road2.rotation.z = Math.PI / 2;
+            scene.add(road2);
+
+            // 隨機散落一些行人(小圓柱)和雜物
+            for(let i=0; i<30; i++) {
+                const x = (Math.random() - 0.5) * 70;
+                const z = (Math.random() - 0.5) * 70;
+                if (Math.abs(x) < 5 && Math.abs(z) < 5) continue; // 不要生成在中心
+                createObject('pedestrian', x, z);
+            }
+
+            updateUI();
+        }
+
+        // 創建單個物體的輔助函數
+        function createObject(type, x, z) {
+            let mesh, colliderRadius, scoreValue, requiredSize;
+            
+            switch(type) {
+                case 'pedestrian':
+                    const pedGeo = new THREE.CylinderGeometry(0.3, 0.3, 1.2, 8);
+                    const pedMat = new THREE.MeshStandardMaterial({ color: 0xffccaa });
+                    mesh = new THREE.Mesh(pedGeo, pedMat);
+                    mesh.position.set(x, 0.6, z);
+                    colliderRadius = 0.8;
+                    requiredSize = 0.5; // 最小可吃
+                    scoreValue = 1;
+                    break;
+                case 'fence':
+                case 'bench':
+                    const boxGeo = new THREE.BoxGeometry(1.5, 0.8, 0.5);
+                    const boxMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+                    mesh = new THREE.Mesh(boxGeo, boxMat);
+                    mesh.position.set(x, 0.4, z);
+                    colliderRadius = 1.5;
+                    requiredSize = 1.0;
+                    scoreValue = 2;
+                    break;
+                case 'lamp':
+                    mesh = new THREE.Group();
+                    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 4), new THREE.MeshStandardMaterial({color:0x333333}));
+                    pole.position.y = 2;
+                    const light = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.2, 0.4), new THREE.MeshStandardMaterial({color:0xffffee, emissive:0xffffaa}));
+                    light.position.y = 4;
+                    mesh.add(pole, light);
+                    mesh.position.set(x, 0, z);
+                    colliderRadius = 1.2;
+                    requiredSize = 1.2;
+                    scoreValue = 3;
+                    break;
+                case 'tree':
+                    mesh = new THREE.Group();
+                    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.5, 1.5), new THREE.MeshStandardMaterial({color: COLORS.treeTrunk}));
+                    trunk.position.y = 0.75;
+                    const leaves = new THREE.Mesh(new THREE.ConeGeometry(1.5, 3, 8), new THREE.MeshStandardMaterial({color: COLORS.treeLeaves}));
+                    leaves.position.y = 2.5;
+                    mesh.add(trunk, leaves);
+                    mesh.position.set(x, 0, z);
+                    colliderRadius = 2.0;
+                    requiredSize = 1.5;
+                    scoreValue = 5;
+                    break;
+                case 'car':
+                    const carColor = COLORS.car[Math.floor(Math.random() * COLORS.car.length)];
+                    mesh = new THREE.Mesh(new THREE.BoxGeometry(2, 1.2, 4), new THREE.MeshStandardMaterial({color: carColor}));
+                    mesh.position.set(x, 0.6, z);
+                    colliderRadius = 2.5;
+                    requiredSize = 2.0;
+                    scoreValue = 10;
+                    break;
+                case 'house':
+                    mesh = new THREE.Group();
+                    const body = new THREE.Mesh(new THREE.BoxGeometry(4, 3, 4), new THREE.MeshStandardMaterial({color: COLORS.buildingRes[Math.floor(Math.random()*3)]}));
+                    body.position.y = 1.5;
+                    const roof = new THREE.Mesh(new THREE.ConeGeometry(3.5, 2, 4), new THREE.MeshStandardMaterial({color: 0x8B0000}));
+                    roof.position.y = 4;
+                    roof.rotation.y = Math.PI / 4;
+                    mesh.add(body, roof);
+                    mesh.position.set(x, 0, z);
+                    colliderRadius = 4.0;
+                    requiredSize = 3.5;
+                    scoreValue = 30;
+                    break;
+                case 'skyscraper':
+                    const height = 8 + Math.random() * 8;
+                    mesh = new THREE.Mesh(new THREE.BoxGeometry(3.5, height, 3.5), new THREE.MeshStandardMaterial({color: COLORS.buildingCom[Math.floor(Math.random()*3)]}));
+                    mesh.position.set(x, height/2, z);
+                    colliderRadius = 4.5;
+                    requiredSize = 4.5;
+                    scoreValue = 50;
+                    break;
+            }
+
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+
+            objects.push({
+                mesh: mesh,
+                colliderRadius: colliderRadius,
+                requiredSize: requiredSize,
+                scoreValue: scoreValue,
+                active: true,
+                initialY: mesh.position.y
+            });
+            
+            gameData.totalObjects++;
+        }
+
+        // --- 黑洞邏輯 ---
+        function createHole() {
+            // 黑洞視覺：一個黑色的圓柱體，極扁，放在地面稍上方
+            const geometry = new THREE.CylinderGeometry(1, 1, 0.1, 64);
+            // 使用 Basic 材質純黑，不反光
+            const material = new THREE.MeshBasicMaterial({ color: 0x000000 });
+            hole = new THREE.Mesh(geometry, material);
+            hole.position.set(0, 0.05, 0); // 略高於地面，蓋住地面紋理
+            // 給黑洞加一個發光的邊緣環，增加視覺效果
+            const ringGeo = new THREE.RingGeometry(0.9, 1.05, 64);
+            const ringMat = new THREE.MeshBasicMaterial({ color: 0xaa00ff, side: THREE.DoubleSide });
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.rotation.x = -Math.PI / 2;
+            ring.position.y = 0.06;
+            hole.add(ring);
+
+            scene.add(hole);
+            updateHoleSize();
+        }
+
+        function updateHoleSize() {
+            const scale = gameData.holeRadius;
+            hole.scale.set(scale, 1, scale);
+        }
+
+        // --- 控制邏輯 ---
+        function onPointerMove(event) {
+            if (!gameData.isPlaying) return;
+
+            // 處理觸摸和鼠標
+            let clientX, clientY;
+            if (event.changedTouches) {
+                clientX = event.changedTouches[0].clientX;
+                clientY = event.changedTouches[0].clientY;
+            } else {
+                clientX = event.clientX;
+                clientY = event.clientY;
+            }
+
+            mouse.x = (clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersection = new THREE.Vector3();
+            raycaster.ray.intersectPlane(planeTarget, intersection);
+
+            if (intersection) {
+                // 限制在地圖範圍內
+                intersection.x = Math.max(-45, Math.min(45, intersection.x));
+                intersection.z = Math.max(-45, Math.min(45, intersection.z));
+                
+                // 更新目標位置
+                targetPosition.set(intersection.x, 0.05, intersection.z);
+            }
+        }
+        
+        // 更新黑洞位置（根據尺寸調整速度）
+        function updateHolePosition() {
+            // 計算移動速度：隨著黑洞變大而減慢
+            // 基礎速度 0.15，隨著半徑增加而降低
+            // 公式：速度 = 基礎速度 / (1 + 半徑增長比例)
+            const speedFactor = 0.15 / (1 + (gameData.holeRadius - 2.0) * 0.3);
+            
+            // 使用 lerp 平滑移動到目標位置
+            hole.position.lerp(targetPosition, speedFactor);
+        }
+
+        function onWindowResize() {
+            const aspect = window.innerWidth / window.innerHeight;
+            const frustumSize = 40;
+            
+            camera.left = -frustumSize * aspect / 2;
+            camera.right = frustumSize * aspect / 2;
+            camera.top = frustumSize / 2;
+            camera.bottom = -frustumSize / 2;
+            
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- 遊戲主循環 ---
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            if (gameData.isPlaying) {
+                updateHolePosition(); // 更新黑洞位置（根據尺寸調整速度）
+                checkCollisions();
+                handleEatingAnimations();
+                
+                // 相機跟隨黑洞
+                const targetPos = new THREE.Vector3(
+                    hole.position.x + 20, 
+                    hole.position.y + 40, 
+                    hole.position.z + 20
+                );
+                camera.position.lerp(targetPos, 0.1);
+            }
+            
+            renderer.render(scene, camera);
+        }
+
+        function checkCollisions() {
+            const holePos = hole.position;
+            const holeR = gameData.holeRadius;
+
+            objects.forEach(obj => {
+                if (!obj.active) return;
+
+                // 計算距離 (忽略Y軸)
+                const dx = obj.mesh.position.x - holePos.x;
+                const dz = obj.mesh.position.z - holePos.z;
+                const dist = Math.sqrt(dx*dx + dz*dz);
+
+                // 判斷是否接觸範圍：物體碰撞半徑 + 黑洞半徑
+                // 條件：距離小於兩者半徑之和，且黑洞尺寸大於物體需求尺寸
+                const touchDistance = obj.colliderRadius + holeR * 0.5;
+                if (dist < touchDistance && gameData.holeRadius >= obj.requiredSize) {
+                    startEating(obj);
+                }
+            });
+        }
+
+        function startEating(obj) {
+            obj.active = false;
+            eatingObjects.push(obj);
+        }
+
+        function handleEatingAnimations() {
+            for (let i = eatingObjects.length - 1; i >= 0; i--) {
+                const obj = eatingObjects[i];
+                
+                // 動畫：變小 + 向下移動 + 向黑洞中心移動
+                obj.mesh.scale.multiplyScalar(0.85); // 快速縮小
+                obj.mesh.position.y -= 0.5; // 下墜
+                
+                // 向黑洞中心吸入
+                obj.mesh.position.x += (hole.position.x - obj.mesh.position.x) * 0.2;
+                obj.mesh.position.z += (hole.position.z - obj.mesh.position.z) * 0.2;
+
+                if (obj.mesh.scale.x < 0.05) {
+                    // 吃完了
+                    scene.remove(obj.mesh);
+                    eatingObjects.splice(i, 1);
+                    
+                    // 更新遊戲數據
+                    gameData.eatenCount++;
+                    
+                    // 增加黑洞尺寸 (調高成長系數，更快變大)
+                    const growAmount = 0.15 * (obj.scoreValue / 10); // 從 0.05 增加到 0.15
+                    gameData.holeRadius += growAmount;
+                    updateHoleSize();
+                    
+                    updateUI();
+                    checkWin();
+                }
+            }
+        }
+
+        function updateUI() {
+            document.getElementById('score-board').innerText = `進度: ${gameData.eatenCount} / ${gameData.totalObjects}`;
+            
+            // 根據半徑顯示等級
+            let level = 1;
+            if (gameData.holeRadius > 1.5) level = 2; // 可以吃樹
+            if (gameData.holeRadius > 2.0) level = 3; // 可以吃車
+            if (gameData.holeRadius > 3.5) level = 4; // 可以吃房子
+            if (gameData.holeRadius > 4.5) level = "MAX"; // 哥吉拉等級
+            
+            document.getElementById('size-info').innerText = `黑洞等級: ${level}`;
+        }
+
+        function checkWin() {
+            if (gameData.eatenCount >= gameData.totalObjects) {
+                gameData.isPlaying = false;
+                const winScreen = document.getElementById('win-screen');
+                winScreen.style.display = 'flex';
+                // 強制重排以觸發過渡
+                winScreen.offsetHeight; 
+                winScreen.classList.add('active');
+            }
+        }
+
+        function restartGame() {
+            const winScreen = document.getElementById('win-screen');
+            winScreen.classList.remove('active');
+            setTimeout(() => { winScreen.style.display = 'none'; }, 500);
+
+            // 重置數據
+            gameData.eatenCount = 0;
+            gameData.holeRadius = 2.0;  // 與初始值保持一致
+            gameData.isPlaying = true;
+            
+            hole.position.set(0, 0.05, 0);
+            targetPosition.set(0, 0.05, 0); // 重置目標位置
+            updateHoleSize();
+            
+            // 重新生成世界
+            createWorld();
+        }
+
+        // 啟動
+        init();
+
+    </script>
+</body>
+</html>
