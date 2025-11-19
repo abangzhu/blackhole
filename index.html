@@ -419,9 +419,9 @@
         // 更新黑洞位置（根據尺寸調整速度）
         function updateHolePosition() {
             // 計算移動速度：隨著黑洞變大而減慢
-            // 基礎速度 0.15，隨著半徑增加而降低
+            // 基礎速度 0.1，隨著半徑增加而降低
             // 公式：速度 = 基礎速度 / (1 + 半徑增長比例)
-            const speedFactor = 0.12 / (1 + (gameData.holeRadius - 2.0) * 0.3);
+            const speedFactor = 0.1 / (1 + (gameData.holeRadius - 2.0) * 0.3);
             
             // 使用 lerp 平滑移動到目標位置
             hole.position.lerp(targetPosition, speedFactor);
